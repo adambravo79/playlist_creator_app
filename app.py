@@ -1,8 +1,11 @@
 import re
 import os
+from flask import Flask, request, render_template, redirect, url_for
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+
+app = Flask(__name__)
 
 def extract_video_id(url):
     match = re.search(r'(?:v=|\/)([a-zA-Z0-9_-]{11})', url)
@@ -14,7 +17,7 @@ def authenticate_youtube():
     creds = flow.run_local_server(port=8080)
     return build('youtube', 'v3', credentials=creds)
 
-def create_playlist(youtube, title, description):
+def create_playlist(youtube, title, description, privacy):
     request = youtube.playlists().insert(
         part="snippet,status",
         body={
@@ -23,7 +26,7 @@ def create_playlist(youtube, title, description):
                 "description": description,
             },
             "status": {
-                "privacyStatus": "public"
+                "privacyStatus": privacy
             }
         }
     )
@@ -44,19 +47,34 @@ def add_video_to_playlist(youtube, video_id, playlist_id):
     )
     request.execute()
 
-if __name__ == "__main__":
-    youtube = authenticate_youtube()
-    
-    video_urls = [
-        "https://www.youtube.com/watch?v=eidXyMGsUjI",
-        "https://youtu.be/isVoNg_tn_k?si=_0-Vnupf3GSLUHdV",
-        # Adicione mais URLs aqui
-    ]
-    
-    video_ids = [extract_video_id(url) for url in video_urls]
-    playlist_id = create_playlist(youtube, "Minha Playlist", "Descrição da Playlist")
-    
-    for video_id in video_ids:
-        add_video_to_playlist(youtube, video_id, playlist_id)
+@app.route("/", methods=["GET", "POST"])
+def index():
+    if request.method == "POST":
+        # Obtendo dados do formulário
+        file = request.files['file']
+        title = request.form['title']
+        description = request.form['description']
+        privacy = request.form['privacy']
 
-    print("Playlist criada e vídeos adicionados!")
+        # Ler IDs dos vídeos do arquivo
+        video_ids = []
+        if file:
+            content = file.read().decode('utf-8')
+            video_urls = content.splitlines()
+            video_ids = [extract_video_id(url) for url in video_urls]
+
+        # Autenticar e criar a playlist
+        youtube = authenticate_youtube()
+        playlist_id = create_playlist(youtube, title, description, privacy)
+
+        # Adicionar vídeos à playlist
+        for video_id in video_ids:
+            if video_id:
+                add_video_to_playlist(youtube, video_id, playlist_id)
+
+        return redirect(url_for('index'))
+
+    return render_template("index.html")
+
+if __name__ == "__main__":
+    app.run(debug=True)
