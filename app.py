@@ -1,80 +1,117 @@
-import re
-import os
-from flask import Flask, request, render_template, redirect, url_for
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
+from flask import Flask, request, redirect, session, render_template
+from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
+import os
+import google.auth.transport.requests
+import google.oauth2.credentials
 
 app = Flask(__name__)
+app.secret_key = "sua_chave_secreta"
 
-def extract_video_id(url):
-    match = re.search(r'(?:v=|\/)([a-zA-Z0-9_-]{11})', url)
-    return match.group(1) if match else None
+SCOPES = ['https://www.googleapis.com/auth/youtube.force-ssl']
+REDIRECT_URI = 'http://127.0.0.1:5000/oauth2callback'
 
-def authenticate_youtube():
-    SCOPES = ['https://www.googleapis.com/auth/youtube.force-ssl']
-    flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
-    creds = flow.run_local_server(port=8080)
-    return build('youtube', 'v3', credentials=creds)
 
-def create_playlist(youtube, title, description, privacy):
-    request = youtube.playlists().insert(
-        part="snippet,status",
-        body={
-            "snippet": {
-                "title": title,
-                "description": description,
-            },
-            "status": {
-                "privacyStatus": privacy
-            }
-        }
+@app.route('/', methods=['GET', 'POST'])
+def index():
+    if request.method == 'POST':
+        session['title'] = request.form['title']
+        session['description'] = request.form['description']
+        session['privacy'] = request.form['privacy']
+        file = request.files['file']
+        session['video_urls'] = file.read().decode('utf-8').splitlines()
+
+        # Iniciar fluxo OAuth
+        flow = Flow.from_client_secrets_file(
+            'credentials.json',
+            scopes=SCOPES,
+            redirect_uri=REDIRECT_URI
+        )
+        auth_url, state = flow.authorization_url(access_type='offline', include_granted_scopes='true')
+        session['state'] = state
+        return redirect(auth_url)
+
+    return render_template('index.html')
+
+
+@app.route('/oauth2callback')
+def oauth2callback():
+    state = session['state']
+    flow = Flow.from_client_secrets_file(
+        'credentials.json',
+        scopes=SCOPES,
+        state=state,
+        redirect_uri=REDIRECT_URI
     )
-    return request.execute()['id']
+    flow.fetch_token(authorization_response=request.url)
 
-def add_video_to_playlist(youtube, video_id, playlist_id):
-    request = youtube.playlistItems().insert(
-        part="snippet",
-        body={
-            "snippet": {
-                "playlistId": playlist_id,
-                "resourceId": {
-                    "kind": "youtube#video",
-                    "videoId": video_id
+    credentials = flow.credentials
+    session['credentials'] = {
+        'token': credentials.token,
+        'refresh_token': credentials.refresh_token,
+        'token_uri': credentials.token_uri,
+        'client_id': credentials.client_id,
+        'client_secret': credentials.client_secret,
+        'scopes': credentials.scopes
+    }
+
+    return redirect('/create')
+
+
+@app.route('/create')
+def create_playlist():
+    if 'credentials' not in session:
+        return redirect('/')
+
+    creds = google.oauth2.credentials.Credentials(**session['credentials'])
+
+    youtube = build('youtube', 'v3', credentials=creds)
+
+    try:
+        # Criar playlist
+        response = youtube.playlists().insert(
+            part="snippet,status",
+            body={
+                "snippet": {
+                    "title": session['title'],
+                    "description": session['description']
+                },
+                "status": {
+                    "privacyStatus": session['privacy']
                 }
             }
-        }
-    )
-    request.execute()
+        ).execute()
 
-@app.route("/", methods=["GET", "POST"])
-def index():
-    if request.method == "POST":
-        # Obtendo dados do formulário
-        file = request.files['file']
-        title = request.form['title']
-        description = request.form['description']
-        privacy = request.form['privacy']
+        playlist_id = response['id']
 
-        # Ler IDs dos vídeos do arquivo
-        video_ids = []
-        if file:
-            content = file.read().decode('utf-8')
-            video_urls = content.splitlines()
-            video_ids = [extract_video_id(url) for url in video_urls]
+        # Adicionar vídeos
+        for url in session['video_urls']:
+            if "v=" in url:
+                video_id = url.split("v=")[1].split("&")[0]
+                youtube.playlistItems().insert(
+                    part="snippet",
+                    body={
+                        "snippet": {
+                            "playlistId": playlist_id,
+                            "resourceId": {
+                                "kind": "youtube#video",
+                                "videoId": video_id
+                            }
+                        }
+                    }
+                ).execute()
 
-        # Autenticar e criar a playlist
-        youtube = authenticate_youtube()
-        playlist_id = create_playlist(youtube, title, description, privacy)
+        return render_template("sucesso.html", playlist_id=playlist_id)
 
-        # Adicionar vídeos à playlist
-        for video_id in video_ids:
-            if video_id:
-                add_video_to_playlist(youtube, video_id, playlist_id)
-
-        return redirect(url_for('index'))
-
-    return render_template("index.html")
+    except Exception as e:
+        print("Erro ao criar playlist:", e)
+        if "youtubeSignupRequired" in str(e):
+            return render_template("erro_canal.html")
+        return f"Erro: {e}"
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(port=5000, debug=True)
+
+# if __name__ == "__main__":
+#     # Rode o Flask sem o reloader automático, que causa o MismatchingStateError
+#     app.run(debug=True, use_reloader=False)

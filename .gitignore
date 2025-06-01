@@ -4,3 +4,6 @@ __pycache__/
 credentials.json
 .vscode
 .venv
+venv
+client_secret_661792677473-acccqco7osvjv4568m75l62vtbv6ngg0.apps.googleusercontent.com.json:Zone.Identifier
+token.pickle
